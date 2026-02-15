@@ -1,0 +1,116 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>微光心事LumiTrace</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body data-scroll-target="{{ scroll_target }}">
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">L</span>
+        <span class="brand-text">微光心事LumiTrace</span>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="centerline">
+        <div class="centerline-title">关系进程时间轴</div>
+        <form class="timeline-form" method="post" action="{{ url_for('events_add_page') }}">
+          <input type="date" name="event_date" required value="{{ today }}" />
+          <input name="title" placeholder="事件标题（例：第一次正式约会）" required />
+          <input name="category" placeholder="分类（沟通/约会/冲突）" />
+          <input name="mood" placeholder="情绪（开心/焦虑/失落）" />
+          <input name="importance" type="number" min="1" max="5" value="3" />
+          <textarea name="details" placeholder="细节（关键对话、触发点、结果）"></textarea>
+          <div class="actions">
+            <button type="submit">添加到时间轴</button>
+            <span class="hint">{{ timeline_hint }}</span>
+          </div>
+          {% if error_text %}
+          <div class="hint" style="color: #c62828">{{ error_text }}</div>
+          {% endif %}
+        </form>
+
+        <ul class="axis-list">
+          {% if events %}
+            {% for e in events %}
+            <li class="axis-item {{ 'left' if loop.index0 % 2 == 0 else 'right' }}" data-id="{{ e.id }}">
+              <div class="axis-head">
+                <strong>{{ e.event_date }} {{ e.title }}</strong>
+                <form method="post" action="{{ url_for('events_delete_page', event_id=e.id) }}" style="display:inline">
+                  <button class="delete-btn" type="submit">删除</button>
+                </form>
+              </div>
+              <div class="axis-meta">{{ e.category or '未分类' }} · {{ e.mood or '未知' }} · 重要度 {{ e.importance }}</div>
+              <div class="axis-detail">{{ e.details or '无细节记录' }}</div>
+            </li>
+            {% endfor %}
+          {% else %}
+            <li class="axis-empty">还没有记录，先添加第一条事件。</li>
+          {% endif %}
+        </ul>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <div class="card-title">关系档案</div>
+          <form method="post" action="{{ url_for('profile_save_page') }}">
+            <div class="form-grid">
+              <div>
+                <div class="field-help">你的名字（用于建议话术称呼）</div>
+                <input name="your_name" placeholder="你的名字" value="{{ profile.get('your_name', '') }}" />
+              </div>
+              <div>
+                <div class="field-help">对方名字（用于上下文记忆）</div>
+                <input name="partner_name" placeholder="对方名字" value="{{ profile.get('partner_name', '') }}" />
+              </div>
+              <div>
+                <div class="field-help">当前关系阶段（如暧昧/恋爱中/冷战）</div>
+                <input name="stage" placeholder="关系阶段（暧昧/恋爱中/冷战等）" value="{{ profile.get('stage', '') }}" />
+              </div>
+            </div>
+            <div class="field-help">对方偏好（沟通方式、活动、频率）</div>
+            <textarea name="preferences" placeholder="对方偏好（喜欢的沟通方式、活动等）">{{ profile.get('preferences', '') }}</textarea>
+            <div class="field-help">边界/雷区（避免触发误会或冲突）</div>
+            <textarea name="boundaries" placeholder="边界/雷区（不喜欢的话题、行为）">{{ profile.get('boundaries', '') }}</textarea>
+            <div class="field-help">关系目标（短期可执行，便于 AI 给出策略）</div>
+            <textarea name="goals" placeholder="关系目标（例如：一个月内关系升温）">{{ profile.get('goals', '') }}</textarea>
+            <div class="actions">
+              <button type="submit">保存档案</button>
+              <span class="hint">{{ profile_hint }}</span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="grid" id="coach-section">
+        <div class="card">
+          <div class="card-title">向军师提问</div>
+          <form id="coachForm" method="post" action="{{ url_for('coach_page') }}">
+            <div class="form-grid">
+              <select name="provider">
+                {% for p in provider_options %}
+                <option value="{{ p }}" {% if selected_provider == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+              <input name="model" value="{{ selected_model }}" placeholder="模型名（如 gemini-2.0-flash / gpt-4o-mini）" />
+              <input name="base_url" value="{{ selected_base_url }}" placeholder="OpenAI兼容Base URL（可选）" />
+            </div>
+            <textarea name="question" placeholder="例如：她最近回复变慢，我该怎么做？" required></textarea>
+            <div class="actions">
+              <button id="coachSubmitBtn" type="submit">生成策略</button>
+              <span class="hint" id="coachHint">{{ coach_hint }}</span>
+            </div>
+          </form>
+          <div class="answer">{{ answer_html }}</div>
+        </div>
+      </section>
+    </main>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
