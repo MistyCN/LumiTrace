@@ -53,6 +53,7 @@ templates/index.html
 static/style.css
 requirements.txt
 data.db  # 启动后自动生成
+example_data.db #包含测试用例
 ```
 
 ## 5. 多模型切换说明
@@ -61,6 +62,9 @@ data.db  # 启动后自动生成
 - `provider`：`gemini` 或 `openai`
 - `model`：模型名
 - `base_url`：仅 OpenAI 兼容接口需要，官方 OpenAI 可留默认
+
+## 6.测试用例
+- 将example_data.db改名为data.db即可使用
 
 ```bash
 ███╗   ███╗██╗███████╗████████╗██╗   ██╗
