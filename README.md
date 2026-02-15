@@ -19,22 +19,22 @@ pip install -r requirements.txt
 复制 `.env.example` 到 `.env`（或直接设置系统环境变量）。
 
 Gemini：
-
+```bash
 GOOGLE_API_KEY=你的key
 GEMINI_MODEL=gemini-2.0-flash
-
+```
 
 OpenAI 兼容：
-
+```bash
 OPENAI_API_KEY= 你的key
 OPENAI_MODEL= 模型名
 OPENAI_BASE_URL= 模型URL
-
+```
 
 默认 provider（可选）：
-
+```bash
 LLM_PROVIDER=gemini
-
+```
 可选值：`gemini` / `openai`。
 
 ## 3. 运行
