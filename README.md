@@ -21,7 +21,7 @@ pip install -r requirements.txt
 Gemini：
 ```bash
 GOOGLE_API_KEY=你的key
-GEMINI_MODEL=gemini-3.0-flash
+GEMINI_MODEL=gemini-3-flash-preview
 ```
 
 OpenAI 兼容：

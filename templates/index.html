@@ -11,13 +11,24 @@
     <div class="bg-orb orb-2"></div>
 
     <header class="topbar">
-      <div class="brand">
+      <a class="brand" href="{{ url_for('index') }}">
         <span class="brand-mark">L</span>
         <span class="brand-text">微光心事LumiTrace</span>
-      </div>
+      </a>
     </header>
 
     <main class="container">
+      <section class="project-hero">
+        <div class="project-hero-kicker">Clarity For Connection</div>
+        <h1>微光心事 LumiTrace</h1>
+        <p>把情绪与事件变成清晰线索，帮你做出更稳的沟通决策。</p>
+        <div class="project-hero-points">
+          <span>关键时刻留痕</span>
+          <span>偏好与边界</span>
+          <span>行动建议</span>
+        </div>
+      </section>
+
       <section class="centerline">
         <div class="centerline-title">关系进程时间轴</div>
         <form class="timeline-form" method="post" action="{{ url_for('events_add_page') }}">
@@ -25,7 +36,6 @@
           <input name="title" placeholder="事件标题（例：第一次正式约会）" required />
           <input name="category" placeholder="分类（沟通/约会/冲突）" />
           <input name="mood" placeholder="情绪（开心/焦虑/失落）" />
-          <input name="importance" type="number" min="1" max="5" value="3" />
           <textarea name="details" placeholder="细节（关键对话、触发点、结果）"></textarea>
           <div class="actions">
             <button type="submit">添加到时间轴</button>
@@ -46,7 +56,7 @@
                   <button class="delete-btn" type="submit">删除</button>
                 </form>
               </div>
-              <div class="axis-meta">{{ e.category or '未分类' }} · {{ e.mood or '未知' }} · 重要度 {{ e.importance }}</div>
+              <div class="axis-meta">{{ e.category or '未分类' }} · {{ e.mood or '未知' }}</div>
               <div class="axis-detail">{{ e.details or '无细节记录' }}</div>
             </li>
             {% endfor %}
@@ -93,24 +103,196 @@
           <div class="card-title">向军师提问</div>
           <form id="coachForm" method="post" action="{{ url_for('coach_page') }}">
             <div class="form-grid">
-              <select name="provider">
+              <select name="provider" id="providerSelect">
                 {% for p in provider_options %}
-                <option value="{{ p }}" {% if selected_provider == p %}selected{% endif %}>{{ p }}</option>
+                <option value="{{ p }}" {% if selected_provider == p %}selected{% endif %}>
+                  {% if p == 'openai' %}OpenAI 兼容模型{% else %}Gemini 官方模型{% endif %}
+                </option>
                 {% endfor %}
               </select>
-              <input name="model" value="{{ selected_model }}" placeholder="模型名（如 gemini-2.0-flash / gpt-4o-mini）" />
-              <input name="base_url" value="{{ selected_base_url }}" placeholder="OpenAI兼容Base URL（可选）" />
+              <select name="model" id="modelSelect" data-selected-model="{{ selected_model }}"></select>
+              <input
+                id="baseUrlInput"
+                name="base_url"
+                value="{{ selected_base_url }}"
+                placeholder="OpenAI 兼容 Base URL（可选）"
+              />
             </div>
-            <textarea name="question" placeholder="例如：她最近回复变慢，我该怎么做？" required></textarea>
+            <div class="field-help" id="providerHelp"></div>
+            <textarea
+              name="question"
+              placeholder="例如：她最近回复变慢，我该怎么做？"
+              required
+              {% if scroll_target == 'coach' %}autofocus{% endif %}
+            ></textarea>
             <div class="actions">
               <button id="coachSubmitBtn" type="submit">生成策略</button>
               <span class="hint" id="coachHint">{{ coach_hint }}</span>
             </div>
+            <div class="hint hint-error" id="coachError"></div>
           </form>
-          <div class="answer">{{ answer_html }}</div>
+          <div class="answer" id="coachAnswer">{{ answer_html }}</div>
         </div>
       </section>
     </main>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script id="modelCatalogData" type="application/json">{{ model_catalog_json | safe }}</script>
+    <script>
+      const providerSelect = document.getElementById("providerSelect");
+      const modelSelect = document.getElementById("modelSelect");
+      const baseUrlInput = document.getElementById("baseUrlInput");
+      const providerHelp = document.getElementById("providerHelp");
+      const coachForm = document.getElementById("coachForm");
+      const coachAnswer = document.getElementById("coachAnswer");
+      const coachHint = document.getElementById("coachHint");
+      const coachError = document.getElementById("coachError");
+      const coachSubmitBtn = document.getElementById("coachSubmitBtn");
+      const modelCatalog = JSON.parse(document.getElementById("modelCatalogData").textContent || "{}");
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function pickKeyword(content) {
+        const entityParser = document.createElement("textarea");
+        entityParser.innerHTML = String(content || "");
+        let text = entityParser.value;
+        text = text.replace(/<[^>]+>/g, "");
+        text = text.replace(/^[\-*0-9\.\)\(]+/, "");
+        text = text.trim().replace(/^[\[\]【】()（）"'“”‘’\s]+|[\[\]【】()（）"'“”‘’\s]+$/g, "");
+        const parts = text.split(/[，。；：、,\.\s!！？?/\\|]+/).filter(Boolean);
+        const keyword = parts.length ? parts[0] : text;
+        return keyword.slice(0, 8);
+      }
+
+      function renderTagKeyword(safeText, tagName, cssClass) {
+        const pattern = new RegExp("\\[" + tagName + "\\]([\\s\\S]+?)\\[/" + tagName + "\\]", "gi");
+        return safeText.replace(pattern, (_, content) => {
+          const keyword = pickKeyword(content);
+          if (!keyword) {
+            return "";
+          }
+          return `<span class="${cssClass}">${escapeHtml(keyword)}</span>`;
+        });
+      }
+
+      function renderAnswerHtml(raw) {
+        let safe = escapeHtml(raw || "");
+        safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        safe = renderTagKeyword(safe, "focus", "tag-focus");
+        safe = renderTagKeyword(safe, "action", "tag-action");
+        safe = renderTagKeyword(safe, "risk", "tag-risk");
+        safe = renderTagKeyword(safe, "script", "tag-script");
+        safe = renderTagKeyword(safe, "high", "tag-focus");
+        safe = renderTagKeyword(safe, "mid", "tag-action");
+        safe = renderTagKeyword(safe, "low", "tag-risk");
+        return safe.replace(/\n/g, "<br>");
+      }
+
+      function renderStreamingText(raw) {
+        coachAnswer.innerHTML = escapeHtml(raw || "").replace(/\n/g, "<br>");
+      }
+
+      function updateModelOptions() {
+        const provider = providerSelect.value;
+        const options = modelCatalog[provider] || [];
+        const selected = modelSelect.getAttribute("data-selected-model");
+        modelSelect.innerHTML = "";
+        for (const modelName of options) {
+          const option = document.createElement("option");
+          option.value = modelName;
+          option.textContent = modelName;
+          if (selected && selected === modelName) {
+            option.selected = true;
+          }
+          modelSelect.appendChild(option);
+        }
+        if (!modelSelect.value && options.length) {
+          modelSelect.value = options[0];
+        }
+        modelSelect.setAttribute("data-selected-model", modelSelect.value || "");
+      }
+
+      function updateProviderUI() {
+        const provider = providerSelect.value;
+        const isOpenAI = provider === "openai";
+        baseUrlInput.disabled = !isOpenAI;
+        baseUrlInput.classList.toggle("is-hidden", !isOpenAI);
+        if (isOpenAI) {
+          providerHelp.textContent = "当前为 OpenAI 兼容模型；可按需填写 Base URL（第三方兼容服务常用）。";
+        } else {
+          providerHelp.textContent = "当前为 Gemini 官方模型；无需填写 Base URL。";
+          baseUrlInput.value = "";
+        }
+      }
+
+      providerSelect.addEventListener("change", () => {
+        modelSelect.setAttribute("data-selected-model", "");
+        updateModelOptions();
+        updateProviderUI();
+      });
+
+      modelSelect.addEventListener("change", () => {
+        modelSelect.setAttribute("data-selected-model", modelSelect.value || "");
+      });
+
+      coachForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        coachSubmitBtn.disabled = true;
+        coachHint.textContent = "生成中...";
+        coachError.textContent = "";
+        coachAnswer.textContent = "";
+
+        const formData = new FormData(coachForm);
+        if (providerSelect.value !== "openai") {
+          formData.set("base_url", "");
+        }
+
+        let fullText = "";
+        try {
+          const response = await fetch("{{ url_for('coach_stream_page') }}", {
+            method: "POST",
+            body: formData,
+          });
+          if (!response.ok) {
+            const err = await response.text();
+            throw new Error(err || "请求失败");
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            fullText += decoder.decode(value, { stream: true });
+            renderStreamingText(fullText);
+          }
+          fullText += decoder.decode();
+          coachAnswer.innerHTML = renderAnswerHtml(fullText);
+          coachHint.textContent = "已生成";
+        } catch (error) {
+          coachHint.textContent = "生成失败";
+          coachError.textContent = error.message || "请求失败，请稍后重试。";
+        } finally {
+          coachSubmitBtn.disabled = false;
+        }
+      });
+
+      updateModelOptions();
+      updateProviderUI();
+
+      const scrollTarget = document.body.getAttribute("data-scroll-target");
+      if (scrollTarget === "coach") {
+        const coachSection = document.getElementById("coach-section");
+        if (coachSection) {
+          coachSection.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+    </script>
   </body>
 </html>

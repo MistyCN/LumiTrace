@@ -8,13 +8,14 @@ import os
 import re
 import sqlite3
 import time
+import json
 from datetime import datetime
-from html import escape
+from html import escape, unescape
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, Iterator, List, Mapping
 
 from dotenv import load_dotenv
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, Response, redirect, render_template, request, stream_with_context, url_for
 from markupsafe import Markup
 
 try:
@@ -47,18 +48,28 @@ PROFILE_FIELDS = (
 )
 
 AI_PROMPT_TEMPLATE = """
-你是“微光心事LumiTrace”，目标是给出稳健、尊重边界、可执行的恋爱建议。
-你必须基于用户提供的恋爱记忆上下文，避免空泛鸡汤。
+你是“微光心事LumiTrace”的资深关系教练。
+目标：给出稳健、尊重边界、可立即执行的建议，避免空泛安慰。
+
+你的建议必须基于用户提供的恋爱记忆上下文，优先引用具体事件（日期/标题/细节）。
+如果上下文信息不足，请先指出缺口，再给低风险的默认策略。
 
 输出格式:
-1) 局势判断（3条内）
-2) 风险提醒（最多3条）
-3) 行动计划
+1) 现状分析
+2) 操作建议
+3) 注意事项
 
-格式要求:
-- 重要信息用 **加粗**
-- 用 [high]...[/high] / [mid]...[/mid] / [low]...[/low] 标注重要性
+写作要求:
+- 每条尽量短句，避免大段抽象说教
+- 尽量采用“原因 -> 动作 -> 预期结果”
+- 关键结论用 **加粗**
+- 用 [focus]...[/focus] 标出关键判断关键词
+- 用 [action]...[/action] 标出可执行动作关键词
+- 用 [risk]...[/risk] 标出风险提醒关键词
+- 用 [script]...[/script] 标出可直接发送的话术关键词
+- 标签里只能放 2-8 字词汇，禁止给整句加标签，每句最多 1-2 个标签
 - 不要输出任何其他HTML
+- 不要使用“重要程度/优先级高低”这类分级概念
 
 恋爱记忆上下文:
 {context}
@@ -68,9 +79,18 @@ AI_PROMPT_TEMPLATE = """
 """.strip()
 
 DEFAULT_PROVIDER = str(os.getenv("LLM_PROVIDER") or "").strip() or "gemini"
-DEFAULT_GEMINI_MODEL = str(os.getenv("GEMINI_MODEL") or "").strip() or "gemini-2.0-flash"
+DEFAULT_GEMINI_MODEL = str(os.getenv("GEMINI_MODEL") or "").strip() or "gemini-3-flash-preview"
 DEFAULT_OPENAI_MODEL = str(os.getenv("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 DEFAULT_OPENAI_BASE_URL = str(os.getenv("OPENAI_BASE_URL") or "").strip()
+GEMINI_MODELS = tuple(
+    dict.fromkeys(
+        [DEFAULT_GEMINI_MODEL, "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro"]
+    )
+)
+OPENAI_MODELS = tuple(
+    dict.fromkeys([DEFAULT_OPENAI_MODEL, "gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"])
+)
+MODEL_CATALOG = {"gemini": GEMINI_MODELS, "openai": OPENAI_MODELS}
 
 app = Flask(__name__)
 load_dotenv()
@@ -88,11 +108,16 @@ def today_iso() -> str:
 
 
 def clean(value: Any) -> str:
+    # 把 None/空值统一成 ""，再去掉首尾空白，避免后续 .lower() / .get() 报错或出现脏输入
     return str(value or "").strip()
 
 
 def normalize_events_for_timeline(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Render timeline in chronological order (old -> new)."""
+    # sorted(..., key=...) 会按 key 返回的元组排序：
+    # 先比 event_date，再比 id；两者都是升序，所以结果是“从旧到新”的时间线
+    # e.get("event_date", ""): 没日期时用空字符串兜底
+    # int(e.get("id", 0)): 没 id 时用 0，且确保按数字而不是字符串比较
     return sorted(events, key=lambda e: (e.get("event_date", ""), int(e.get("id", 0))))
 
 
@@ -260,8 +285,7 @@ def build_context_text(profile: Mapping[str, Any], events: List[Dict[str, Any]])
     for event in events:
         event_lines.append(
             f"- [{event['event_date']}] {event['title']} | 分类:{event.get('category') or '未分类'} "
-            f"| 情绪:{event.get('mood') or '未知'} | 重要度:{event.get('importance', 3)} "
-            f"| 细节:{event.get('details') or '无'}"
+            f"| 情绪:{event.get('mood') or '未知'} | 细节:{event.get('details') or '无'}"
         )
 
     events_text = "\n".join(event_lines) if event_lines else "- 暂无事件记录"
@@ -355,11 +379,13 @@ def ask_with_openai(prompt: str, model: str, base_url: str) -> str:
 
 def ask_love_coach(question: str, context: str, provider: str, model: str, base_url: str) -> str:
     """Route request to selected provider (gemini/openai-compatible)."""
+    # provider 统一清洗+小写；如果为空就默认 gemini
     selected_provider = clean(provider).lower() or "gemini"
     if selected_provider not in SUPPORTED_PROVIDERS:
         return f"不支持的 provider: {selected_provider}"
 
     prompt = AI_PROMPT_TEMPLATE.format(context=context, question=question)
+    # 用户没填 model 时，根据 provider 选择对应默认模型
     selected_model = clean(model) or (
         DEFAULT_GEMINI_MODEL if selected_provider == "gemini" else DEFAULT_OPENAI_MODEL
     )
@@ -369,13 +395,142 @@ def ask_love_coach(question: str, context: str, provider: str, model: str, base_
     return ask_with_openai(prompt, selected_model, clean(base_url) or DEFAULT_OPENAI_BASE_URL)
 
 
+def _extract_openai_delta(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    parts.append(str(text))
+            else:
+                text = getattr(item, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "".join(parts)
+    return ""
+
+
+def stream_with_gemini(prompt: str, model: str) -> Iterator[str]:
+    api_key = clean(os.getenv("GOOGLE_API_KEY"))
+    if not api_key:
+        yield "尚未配置 GOOGLE_API_KEY。请在系统环境变量或 .env 中设置后重试。"
+        return
+    if genai is None:
+        yield "未安装 google genai SDK。请执行: pip install google-genai"
+        return
+
+    client = genai.Client(api_key=api_key)
+    for attempt in range(3):
+        try:
+            any_chunk = False
+            for chunk in client.models.generate_content_stream(model=model, contents=prompt):
+                text = clean(getattr(chunk, "text", ""))
+                if text:
+                    any_chunk = True
+                    yield text
+            if not any_chunk:
+                yield "模型返回为空，请稍后再试。"
+            return
+        except Exception as exc:  # pragma: no cover
+            message = str(exc)
+            if _is_retryable_error(message):
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            yield f"AI调用失败: {exc}"
+            return
+    yield "AI调用失败: 请求频率或配额受限（429）。请稍后重试。"
+
+
+def stream_with_openai(prompt: str, model: str, base_url: str) -> Iterator[str]:
+    api_key = clean(os.getenv("OPENAI_API_KEY"))
+    if not api_key:
+        yield "尚未配置 OPENAI_API_KEY。请在系统环境变量或 .env 中设置后重试。"
+        return
+    if OpenAI is None:
+        yield "未安装 openai SDK。请执行: pip install openai"
+        return
+
+    client = OpenAI(api_key=api_key, base_url=base_url or None)
+    for attempt in range(3):
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+            )
+            any_chunk = False
+            for event in stream:
+                choice = (event.choices or [None])[0]
+                delta = getattr(choice, "delta", None)
+                text = _extract_openai_delta(getattr(delta, "content", ""))
+                if text:
+                    any_chunk = True
+                    yield text
+            if not any_chunk:
+                yield "模型返回为空，请稍后再试。"
+            return
+        except Exception as exc:  # pragma: no cover
+            message = str(exc)
+            if _is_retryable_error(message):
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            yield f"AI调用失败: {exc}"
+            return
+    yield "AI调用失败: 请求频率或配额受限（429）。请稍后重试。"
+
+
+def stream_love_coach(question: str, context: str, provider: str, model: str, base_url: str) -> Iterator[str]:
+    selected_provider = clean(provider).lower() or "gemini"
+    if selected_provider not in SUPPORTED_PROVIDERS:
+        yield f"不支持的 provider: {selected_provider}"
+        return
+
+    selected_model = clean(model) or (
+        DEFAULT_GEMINI_MODEL if selected_provider == "gemini" else DEFAULT_OPENAI_MODEL
+    )
+    prompt = AI_PROMPT_TEMPLATE.format(context=context, question=question)
+    if selected_provider == "gemini":
+        yield from stream_with_gemini(prompt, selected_model)
+        return
+    yield from stream_with_openai(prompt, selected_model, clean(base_url) or DEFAULT_OPENAI_BASE_URL)
+
+
 def render_answer_html(raw: str) -> str:
     """Convert safe subset of markup from model text into styled HTML spans."""
+    def _pick_keyword(content: str) -> str:
+        text = re.sub(r"<[^>]+>", "", unescape(clean(content)))
+        text = re.sub(r"^[\-*0-9\.\)\(]+", "", text)
+        text = text.strip("[]【】()（）\"'“”‘’ ")
+        parts = [p for p in re.split(r"[，。；：、,.\s!！？?/\\|]+", text) if p]
+        keyword = parts[0] if parts else text
+        return keyword[:8]
+
+    def _render_tag_keyword(safe_text: str, tag_name: str, css_class: str) -> str:
+        pattern = rf"\[{tag_name}\]([\s\S]+?)\[/{tag_name}\]"
+
+        def _repl(match: re.Match[str]) -> str:
+            keyword = _pick_keyword(match.group(1))
+            if not keyword:
+                return ""
+            return f'<span class="{css_class}">{keyword}</span>'
+
+        return re.sub(pattern, _repl, safe_text, flags=re.I)
+
     safe = escape(raw or "")
     safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
-    safe = re.sub(r"\[high\]([\s\S]+?)\[/high\]", r'<span class="tag-high">\1</span>', safe, flags=re.I)
-    safe = re.sub(r"\[mid\]([\s\S]+?)\[/mid\]", r'<span class="tag-mid">\1</span>', safe, flags=re.I)
-    safe = re.sub(r"\[low\]([\s\S]+?)\[/low\]", r'<span class="tag-low">\1</span>', safe, flags=re.I)
+    safe = _render_tag_keyword(safe, "focus", "tag-focus")
+    safe = _render_tag_keyword(safe, "action", "tag-action")
+    safe = _render_tag_keyword(safe, "risk", "tag-risk")
+    safe = _render_tag_keyword(safe, "script", "tag-script")
+    # Backward compatibility for older model outputs.
+    safe = _render_tag_keyword(safe, "high", "tag-focus")
+    safe = _render_tag_keyword(safe, "mid", "tag-action")
+    safe = _render_tag_keyword(safe, "low", "tag-risk")
     return safe.replace("\n", "<br>")
 
 
@@ -395,11 +550,14 @@ def render_home_page(
     scroll_target: str = "",
 ):
     """Single place for homepage context assembly to keep routes short."""
+    # 所有首页展示需要的数据，都在这里一次性准备好，路由函数只负责分支判断
     profile = get_profile()
     events = normalize_events_for_timeline(list_events(limit=DEFAULT_PAGE_EVENTS_LIMIT))
+    # 规范化 provider：空值用默认值；非法值回退到 gemini，保证模板渲染稳定
     normalized_provider = clean(selected_provider).lower() or DEFAULT_PROVIDER
     if normalized_provider not in SUPPORTED_PROVIDERS:
         normalized_provider = "gemini"
+    # model 为空时跟随 provider 给默认值，避免提交空模型名
     default_model = DEFAULT_GEMINI_MODEL if normalized_provider == "gemini" else DEFAULT_OPENAI_MODEL
     normalized_model = clean(selected_model) or default_model
     return render_template(
@@ -416,6 +574,7 @@ def render_home_page(
         selected_model=normalized_model,
         selected_base_url=clean(selected_base_url),
         provider_options=SUPPORTED_PROVIDERS,
+        model_catalog_json=json.dumps(MODEL_CATALOG, ensure_ascii=False),
         scroll_target=clean(scroll_target),
     )
 
@@ -462,7 +621,8 @@ def coach_page():
     question = clean(request.form.get("question"))
     provider = clean(request.form.get("provider")).lower() or DEFAULT_PROVIDER
     model = clean(request.form.get("model"))
-    base_url = clean(request.form.get("base_url")) or DEFAULT_OPENAI_BASE_URL
+    raw_base_url = clean(request.form.get("base_url"))
+    base_url = (raw_base_url or DEFAULT_OPENAI_BASE_URL) if provider == "openai" else ""
 
     if provider not in SUPPORTED_PROVIDERS:
         return render_home_page(
@@ -497,6 +657,37 @@ def coach_page():
         selected_model=model,
         selected_base_url=base_url,
         scroll_target="coach",
+    )
+
+
+@app.route("/coach/ask/stream", methods=["POST"])
+def coach_stream_page():
+    question = clean(request.form.get("question"))
+    provider = clean(request.form.get("provider")).lower() or DEFAULT_PROVIDER
+    model = clean(request.form.get("model"))
+    raw_base_url = clean(request.form.get("base_url"))
+    base_url = (raw_base_url or DEFAULT_OPENAI_BASE_URL) if provider == "openai" else ""
+
+    if provider not in SUPPORTED_PROVIDERS:
+        return Response(f"不支持的 provider: {provider}", status=400, mimetype="text/plain")
+    if not question:
+        return Response("question 不能为空", status=400, mimetype="text/plain")
+
+    profile = get_profile()
+    events = list_events(limit=DEFAULT_CONTEXT_EVENTS_LIMIT)
+    context = build_context_text(profile, events)
+
+    def _generate() -> Iterator[str]:
+        full_parts: List[str] = []
+        for chunk in stream_love_coach(question, context, provider=provider, model=model, base_url=base_url):
+            full_parts.append(chunk)
+            yield chunk
+        save_ai_note(question, "".join(full_parts).strip())
+
+    return Response(
+        stream_with_context(_generate()),
+        mimetype="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

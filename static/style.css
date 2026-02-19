@@ -65,6 +65,9 @@ body {
   align-items: center;
   gap: 12px;
   font-weight: 700;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
 }
 
 .brand-mark {
@@ -91,28 +94,84 @@ body {
   z-index: 1;
 }
 
-.tag-high,
-.tag-mid,
-.tag-low {
-  padding: 4px 10px;
+.project-hero {
+  margin: 8px 0 24px;
+  padding: 26px 28px;
+  border-radius: calc(var(--radius) + 2px);
+  border: 1px solid #d9e4f1;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 255, 0.9));
+  box-shadow: var(--shadow);
+}
+
+.project-hero-kicker {
+  display: inline-block;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5b6e86;
+  margin-bottom: 8px;
+}
+
+.project-hero h1 {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 40px);
+  line-height: 1.2;
+}
+
+.project-hero p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  max-width: 700px;
+}
+
+.project-hero-points {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.project-hero-points span {
+  padding: 8px 12px;
   border-radius: 999px;
+  border: 1px solid #d7e3f3;
+  background: rgba(255, 255, 255, 0.9);
+  color: #304258;
   font-size: 12px;
   font-weight: 600;
 }
 
-.tag-high {
-  background: #ffe3e3;
-  color: #c62828;
+.tag-focus,
+.tag-action,
+.tag-risk,
+.tag-script {
+  display: inline;
+  padding: 0 0.22em;
+  border-radius: 0.28em;
+  font-size: 0.96em;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.tag-mid {
-  background: #fff4d6;
-  color: #a15c00;
+.tag-focus {
+  background: #e8f1ff;
+  color: #124da1;
 }
 
-.tag-low {
-  background: #e4f4ff;
-  color: #1a73e8;
+.tag-action {
+  background: #e9f8ee;
+  color: #166a3a;
+}
+
+.tag-risk {
+  background: #fff0e4;
+  color: #a14a00;
+}
+
+.tag-script {
+  background: #f3ecff;
+  color: #5a2a8f;
 }
 
 .muted {
@@ -274,6 +333,7 @@ body {
 }
 
 input,
+select,
 textarea,
 button {
   width: 100%;
@@ -285,6 +345,7 @@ button {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   outline: 2px solid rgba(26, 115, 232, 0.2);
   border-color: var(--primary);
@@ -330,6 +391,11 @@ button:disabled {
   color: var(--muted);
 }
 
+.hint-error {
+  margin-top: 8px;
+  color: #c62828;
+}
+
 .answer {
   margin-top: 14px;
   background: var(--surface-2);
@@ -344,6 +410,10 @@ button:disabled {
   color: #0f1f3a;
 }
 
+.is-hidden {
+  display: none;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -356,6 +426,10 @@ button:disabled {
 }
 
 @media (max-width: 900px) {
+  .project-hero {
+    padding: 20px;
+  }
+
   .actions {
     flex-direction: column;
     align-items: flex-start;
